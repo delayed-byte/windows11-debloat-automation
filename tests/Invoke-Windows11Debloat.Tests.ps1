@@ -1,4 +1,4 @@
-$scriptPath = Join-Path $PSScriptRoot '..\docs\example-debloat.ps1'
+$scriptPath = Join-Path $PSScriptRoot '..\scripts\Invoke-Windows11Debloat.ps1'
 $scriptContent = Get-Content -LiteralPath $scriptPath -Raw
 $tokens = $null
 $parseErrors = $null
@@ -16,7 +16,7 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
-Describe 'example-debloat.ps1 static safety checks' {
+Describe 'Invoke-Windows11Debloat.ps1 static safety checks' {
     It 'has valid PowerShell syntax' {
         Assert-True -Condition ($parseErrors.Count -eq 0) -Message 'The script contains PowerShell parse errors.'
         Assert-True -Condition ($null -ne $scriptAst) -Message 'The script AST was not created.'

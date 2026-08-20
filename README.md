@@ -15,19 +15,19 @@ Review the configurable package, service, and startup arrays before running the 
 Open PowerShell as Administrator, change to the repository directory, and preview the changes:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\docs\example-debloat.ps1 -WhatIf
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-Windows11Debloat.ps1 -WhatIf
 ```
 
 Apply the configuration:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\docs\example-debloat.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-Windows11Debloat.ps1
 ```
 
 PowerShell 7 is also supported. The script automatically relaunches itself in 64-bit Windows PowerShell 5.1 for the Windows-only AppX and System Restore cmdlets:
 
 ```powershell
-pwsh.exe -NoProfile -File .\docs\example-debloat.ps1 -WhatIf
+pwsh.exe -NoProfile -File .\scripts\Invoke-Windows11Debloat.ps1 -WhatIf
 ```
 
 The default invocation does not prompt for every change. Supply `-Confirm` to request confirmation. If restore-point creation is unavailable and you explicitly accept the risk, `-ContinueWithoutRestorePoint` allows the remaining phases to run and records a warning.
@@ -51,3 +51,22 @@ Invoke-Pester -Path .\tests
 ```
 
 The test suite parses the script and checks the safety-critical relaunch, restore-point reuse, dry-run reporting, and protected package configuration without applying system changes.
+
+## Repository structure
+
+```text
+windows11-debloat-automation/
+|-- scripts/
+|   `-- Invoke-Windows11Debloat.ps1
+|-- tests/
+|   `-- Invoke-Windows11Debloat.Tests.ps1
+|-- docs/
+|   |-- requirements.md
+|   `-- requirements-analysis.md
+|-- .gitignore
+`-- README.md
+```
+
+- `scripts/` contains executable automation.
+- `tests/` contains non-mutating Pester checks.
+- `docs/` contains requirements and design analysis.

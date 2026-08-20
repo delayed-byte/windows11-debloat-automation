@@ -8,11 +8,11 @@
     HKCU changes apply only to the account running this script.
 
 .EXAMPLE
-    powershell.exe -ExecutionPolicy Bypass -File .\example-debloat.ps1
+    powershell.exe -ExecutionPolicy Bypass -File .\scripts\Invoke-Windows11Debloat.ps1
 
 .EXAMPLE
     # Explicitly accept the risk of continuing if System Restore is unavailable.
-    powershell.exe -ExecutionPolicy Bypass -File .\example-debloat.ps1 -ContinueWithoutRestorePoint
+    powershell.exe -ExecutionPolicy Bypass -File .\scripts\Invoke-Windows11Debloat.ps1 -ContinueWithoutRestorePoint
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(

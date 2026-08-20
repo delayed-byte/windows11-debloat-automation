@@ -24,34 +24,37 @@ $ErrorActionPreference = 'Stop'
 
 # Windows-only AppX and restore-point cmdlets require 64-bit Windows PowerShell.
 # Transparently hand off PowerShell 7 and 32-bit Windows PowerShell invocations.
-if (-not [Environment]::Is64BitOperatingSystem) {
-    Write-Error 'This script supports 64-bit Windows 11 only.'
-    exit 1
-}
-
-if ($PSVersionTable.PSVersion.Major -ge 7 -or -not [Environment]::Is64BitProcess) {
-    $windowsPowerShellDirectory = if ([Environment]::Is64BitProcess) { 'System32' } else { 'Sysnative' }
-    $windowsPowerShell = Join-Path $env:SystemRoot "$windowsPowerShellDirectory\WindowsPowerShell\v1.0\powershell.exe"
-    if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
-        Write-Error 'Windows PowerShell 5.1 is required for AppX and System Restore operations but could not be found.'
+$script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
+if (-not $script:IsDotSourced) {
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        Write-Error 'This script supports 64-bit Windows 11 only.'
         exit 1
     }
 
-    $windowsPowerShellArguments = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $PSCommandPath
-    )
-    if ($ContinueWithoutRestorePoint) { $windowsPowerShellArguments += '-ContinueWithoutRestorePoint' }
-    if ($WhatIfPreference) { $windowsPowerShellArguments += '-WhatIf' }
-    # Windows PowerShell 5.1 cannot bind an explicit Boolean value supplied to a
-    # switch parameter through -File. Omission represents $false.
-    if ($PSBoundParameters.ContainsKey('Confirm') -and [bool]$PSBoundParameters['Confirm']) {
-        $windowsPowerShellArguments += '-Confirm'
-    }
+    if ($PSVersionTable.PSVersion.Major -ge 7 -or -not [Environment]::Is64BitProcess) {
+        $windowsPowerShellDirectory = if ([Environment]::Is64BitProcess) { 'System32' } else { 'Sysnative' }
+        $windowsPowerShell = Join-Path $env:SystemRoot "$windowsPowerShellDirectory\WindowsPowerShell\v1.0\powershell.exe"
+        if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
+            Write-Error 'Windows PowerShell 5.1 is required for AppX and System Restore operations but could not be found.'
+            exit 1
+        }
 
-    & $windowsPowerShell @windowsPowerShellArguments
-    exit $LASTEXITCODE
+        $windowsPowerShellArguments = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $PSCommandPath
+        )
+        if ($ContinueWithoutRestorePoint) { $windowsPowerShellArguments += '-ContinueWithoutRestorePoint' }
+        if ($WhatIfPreference) { $windowsPowerShellArguments += '-WhatIf' }
+        # Windows PowerShell 5.1 cannot bind an explicit Boolean value supplied to a
+        # switch parameter through -File. Omission represents $false.
+        if ($PSBoundParameters.ContainsKey('Confirm') -and [bool]$PSBoundParameters['Confirm']) {
+            $windowsPowerShellArguments += '-Confirm'
+        }
+
+        & $windowsPowerShell @windowsPowerShellArguments
+        exit $LASTEXITCODE
+    }
 }
 
 # Edit these explicit identifiers to customize the removal set. Do not add AppX
@@ -88,6 +91,15 @@ $StartupRegistryPaths = @(
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
     'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 )
+$RegistryDwordSettings = @(
+    [pscustomobject]@{ Phase = 'Telemetry'; Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'; Name = 'AllowTelemetry'; Value = 0; Area = 'Telemetry' },
+    [pscustomobject]@{ Phase = 'Telemetry'; Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection'; Name = 'AllowTelemetry'; Value = 0; Area = 'Telemetry' },
+    [pscustomobject]@{ Phase = 'Consumer'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'; Name = 'SystemPaneSuggestionsEnabled'; Value = 0; Area = 'Current-user UI settings' },
+    [pscustomobject]@{ Phase = 'Consumer'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'; Name = 'SubscribedContent-338388Enabled'; Value = 0; Area = 'Current-user UI settings' },
+    [pscustomobject]@{ Phase = 'Consumer'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'; Name = 'SubscribedContent-338389Enabled'; Value = 0; Area = 'Current-user UI settings' },
+    [pscustomobject]@{ Phase = 'Consumer'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'; Name = 'SubscribedContent-353696Enabled'; Value = 0; Area = 'Current-user UI settings' },
+    [pscustomobject]@{ Phase = 'Consumer'; Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; Name = 'DisableWindowsConsumerFeatures'; Value = 1; Area = 'Machine UI policy' }
+)
 
 $Results = [System.Collections.Generic.List[object]]::new()
 
@@ -117,6 +129,32 @@ function Add-Result {
     Write-Host "[$Status] $Area - $Item$(if ($Detail) { ": $Detail" })" -ForegroundColor $color
 }
 
+function Get-DeclinedStatus {
+    param([Parameter(Mandatory)][bool]$IsWhatIf)
+    if ($IsWhatIf) { return 'Planned' }
+    return 'Skipped'
+}
+
+function Get-CompletionMessage {
+    param(
+        [Parameter(Mandatory)][int]$FailureCount,
+        [Parameter(Mandatory)][int]$WarningCount,
+        [Parameter(Mandatory)][int]$PlannedCount,
+        [Parameter(Mandatory)][int]$SuccessCount,
+        [Parameter(Mandatory)][bool]$IsWhatIf
+    )
+
+    if ($IsWhatIf) {
+        if ($FailureCount -gt 0) { return "Preview failed with $FailureCount failure(s). No changes were made." }
+        if ($PlannedCount -eq 0) { return 'Preview complete. The system already matches the requested configuration; no changes or restart are required.' }
+        return "Preview complete with $PlannedCount planned operation(s). No changes were made; do not restart for this preview."
+    }
+    if ($SuccessCount -eq 0 -and $WarningCount -eq 0 -and $FailureCount -eq 0) {
+        return 'Completed. The system already matches the requested configuration; no restart is required.'
+    }
+    return "Completed with $FailureCount failure(s) and $WarningCount warning(s). Restart Windows to apply all changes."
+}
+
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -130,7 +168,60 @@ function Ensure-RegistryKey {
     }
 }
 
+function Test-DwordValueMatches {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][int]$Value
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) { return $false }
+    $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($key.GetValueNames() -notcontains $Name) { return $false }
+    return [int]$key.GetValue($Name) -eq $Value
+}
+
+function Test-StartupValueExists {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) { return $false }
+    $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+    return $key.GetValueNames() -contains $Name
+}
+
+function Test-DebloatChangesRequired {
+    [CmdletBinding()]
+    param()
+
+    $provisionedPackages = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop)
+    foreach ($packageName in $BloatwarePackages) {
+        if (@(Get-AppxPackage -Name $packageName -AllUsers -ErrorAction Stop).Count -gt 0) { return $true }
+        if (@($provisionedPackages | Where-Object { $_.DisplayName -eq $packageName }).Count -gt 0) { return $true }
+    }
+
+    foreach ($setting in $RegistryDwordSettings) {
+        if (-not (Test-DwordValueMatches -Path $setting.Path -Name $setting.Name -Value $setting.Value)) { return $true }
+    }
+
+    $services = @(Get-Service -ErrorAction Stop)
+    foreach ($serviceName in $TelemetryServices) {
+        $service = $services | Where-Object { $_.Name -eq $serviceName } | Select-Object -First 1
+        if ($null -ne $service -and ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled')) { return $true }
+    }
+
+    foreach ($path in $StartupRegistryPaths) {
+        foreach ($valueName in $StartupValueNames) {
+            if (Test-StartupValueExists -Path $path -Name $valueName) { return $true }
+        }
+    }
+    return $false
+}
+
 function Set-DwordValue {
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Name,
@@ -139,13 +230,17 @@ function Set-DwordValue {
     )
 
     try {
+        if (Test-DwordValueMatches -Path $Path -Name $Name -Value $Value) {
+            Add-Result -Area $Area -Item $Name -Status Skipped -Detail "Already set to $Value"
+            return
+        }
         if ($PSCmdlet.ShouldProcess("$Path\\$Name", "Set DWORD to $Value")) {
             Ensure-RegistryKey -Path $Path
             New-ItemProperty -Path $Path -Name $Name -PropertyType DWord -Value $Value -Force | Out-Null
             Add-Result -Area $Area -Item $Name -Status Success -Detail "Set to $Value"
         }
         else {
-            $status = if ($WhatIfPreference) { 'Planned' } else { 'Skipped' }
+            $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
             Add-Result -Area $Area -Item $Name -Status $status -Detail "DWORD would be set to $Value"
         }
     }
@@ -155,39 +250,13 @@ function Set-DwordValue {
 }
 
 function New-SafetyRestorePoint {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
     Write-Phase 'System safety and rollback'
-
-    # Checkpoint-Computer permits only one restore point per 24 hours. Reusing a
-    # recent restore point created by this script makes sequential runs safe and
-    # idempotent without weakening the rollback guarantee.
-    $restorePointCutoff = (Get-Date).AddHours(-24)
-    $recentRestorePoint = Get-ComputerRestorePoint -ErrorAction SilentlyContinue |
-        Where-Object { $_.Description -eq 'Pre-Debloat Restore Point' } |
-        ForEach-Object {
-            try {
-                $creationTime = if ($_.CreationTime -is [datetime]) {
-                    $_.CreationTime
-                }
-                else {
-                    [Management.ManagementDateTimeConverter]::ToDateTime([string]$_.CreationTime)
-                }
-                if ($creationTime -ge $restorePointCutoff) { $_ }
-            }
-            catch {
-                # Ignore malformed historical entries and attempt a new checkpoint.
-            }
-        } |
-        Select-Object -First 1
-
-    if ($null -ne $recentRestorePoint) {
-        Add-Result -Area 'Safety' -Item 'Pre-Debloat Restore Point' -Status Success -Detail 'Reusing a restore point created within the last 24 hours'
-        Write-PhaseComplete 'System safety and rollback'
-        return $true
-    }
 
     try {
         if (-not $PSCmdlet.ShouldProcess('C:', 'Enable System Restore and create Pre-Debloat Restore Point')) {
-            $status = if ($WhatIfPreference) { 'Planned' } else { 'Skipped' }
+            $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
             Add-Result -Area 'Safety' -Item 'Pre-Debloat Restore Point' -Status $status -Detail 'System Restore would be enabled and a restore point created'
             Write-PhaseComplete 'System safety and rollback'
             return $WhatIfPreference
@@ -207,6 +276,8 @@ function New-SafetyRestorePoint {
 }
 
 function Remove-BloatwarePackages {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
     Write-Phase 'Removing selected AppX packages'
     try {
         $provisionedPackages = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop)
@@ -218,7 +289,13 @@ function Remove-BloatwarePackages {
     }
 
     foreach ($packageName in $BloatwarePackages) {
-        $installedPackages = @(Get-AppxPackage -Name $packageName -AllUsers -ErrorAction SilentlyContinue)
+        try {
+            $installedPackages = @(Get-AppxPackage -Name $packageName -AllUsers -ErrorAction Stop)
+        }
+        catch {
+            Add-Result -Area 'App removal' -Item "$packageName (inventory)" -Status Failure -Detail $_.Exception.Message
+            continue
+        }
         if ($installedPackages.Count -eq 0) {
             Add-Result -Area 'App removal' -Item "$packageName (installed)" -Status Skipped -Detail 'Not installed'
         }
@@ -230,7 +307,7 @@ function Remove-BloatwarePackages {
                         Add-Result -Area 'App removal' -Item $package.PackageFullName -Status Success
                     }
                     else {
-                        $status = if ($WhatIfPreference) { 'Planned' } else { 'Skipped' }
+                        $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
                         Add-Result -Area 'App removal' -Item $package.PackageFullName -Status $status -Detail 'Installed package would be removed for all users'
                     }
                 }
@@ -252,7 +329,7 @@ function Remove-BloatwarePackages {
                         Add-Result -Area 'App removal' -Item $package.PackageName -Status Success -Detail 'Provisioning removed'
                     }
                     else {
-                        $status = if ($WhatIfPreference) { 'Planned' } else { 'Skipped' }
+                        $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
                         Add-Result -Area 'App removal' -Item $package.PackageName -Status $status -Detail 'Provisioned package would be removed'
                     }
                 }
@@ -266,17 +343,32 @@ function Remove-BloatwarePackages {
 }
 
 function Disable-Telemetry {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
     Write-Phase 'Configuring telemetry and tracking services'
-    Set-DwordValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Area 'Telemetry'
-    Set-DwordValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection' -Name 'AllowTelemetry' -Value 0 -Area 'Telemetry'
+    foreach ($setting in $RegistryDwordSettings | Where-Object { $_.Phase -eq 'Telemetry' }) {
+        Set-DwordValue -Path $setting.Path -Name $setting.Name -Value $setting.Value -Area $setting.Area
+    }
 
+    try {
+        $services = @(Get-Service -ErrorAction Stop)
+    }
+    catch {
+        Add-Result -Area 'Telemetry service' -Item 'Service inventory' -Status Failure -Detail $_.Exception.Message
+        Write-Host 'Failed: Configuring telemetry and tracking services' -ForegroundColor Red
+        return
+    }
     foreach ($serviceName in $TelemetryServices) {
-        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        $service = $services | Where-Object { $_.Name -eq $serviceName } | Select-Object -First 1
         if ($null -eq $service) {
             Add-Result -Area 'Telemetry service' -Item $serviceName -Status Skipped -Detail 'Service not present'
             continue
         }
         try {
+            if ($service.Status -eq 'Stopped' -and $service.StartType -eq 'Disabled') {
+                Add-Result -Area 'Telemetry service' -Item $serviceName -Status Skipped -Detail 'Already stopped and disabled'
+                continue
+            }
             if ($PSCmdlet.ShouldProcess($serviceName, 'Stop service and set startup type to Disabled')) {
                 if ($service.Status -ne 'Stopped') {
                     Stop-Service -Name $serviceName -Force -ErrorAction Stop
@@ -285,7 +377,7 @@ function Disable-Telemetry {
                 Add-Result -Area 'Telemetry service' -Item $serviceName -Status Success -Detail 'Stopped and disabled'
             }
             else {
-                $status = if ($WhatIfPreference) { 'Planned' } else { 'Skipped' }
+                $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
                 Add-Result -Area 'Telemetry service' -Item $serviceName -Status $status -Detail 'Service would be stopped and disabled'
             }
         }
@@ -297,27 +389,23 @@ function Disable-Telemetry {
 }
 
 function Disable-ConsumerFeatures {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
     Write-Phase 'Disabling suggestions and consumer features'
-    $contentDeliveryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
-    foreach ($name in @(
-        'SystemPaneSuggestionsEnabled',
-        'SubscribedContent-338388Enabled',
-        'SubscribedContent-338389Enabled',
-        'SubscribedContent-353696Enabled'
-    )) {
-        Set-DwordValue -Path $contentDeliveryPath -Name $name -Value 0 -Area 'Current-user UI settings'
+    foreach ($setting in $RegistryDwordSettings | Where-Object { $_.Phase -eq 'Consumer' }) {
+        Set-DwordValue -Path $setting.Path -Name $setting.Name -Value $setting.Value -Area $setting.Area
     }
-    Set-DwordValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' -Name 'DisableWindowsConsumerFeatures' -Value 1 -Area 'Machine UI policy'
     Write-PhaseComplete 'Disabling suggestions and consumer features'
 }
 
 function Remove-StartupEntries {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
     Write-Phase 'Removing selected startup entries'
     foreach ($path in $StartupRegistryPaths) {
         foreach ($valueName in $StartupValueNames) {
             try {
-                $existingValue = Get-ItemProperty -Path $path -Name $valueName -ErrorAction SilentlyContinue
-                if ($null -eq $existingValue) {
+                if (-not (Test-StartupValueExists -Path $path -Name $valueName)) {
                     Add-Result -Area 'Startup' -Item "$path\\$valueName" -Status Skipped -Detail 'Value not present'
                     continue
                 }
@@ -326,7 +414,7 @@ function Remove-StartupEntries {
                     Add-Result -Area 'Startup' -Item "$path\\$valueName" -Status Success
                 }
                 else {
-                    $status = if ($WhatIfPreference) { 'Planned' } else { 'Skipped' }
+                    $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
                     Add-Result -Area 'Startup' -Item "$path\\$valueName" -Status $status -Detail 'Startup value would be removed'
                 }
             }
@@ -338,41 +426,64 @@ function Remove-StartupEntries {
     Write-PhaseComplete 'Removing selected startup entries'
 }
 
-if (-not (Test-Administrator)) {
-    Write-Error 'Administrator privileges are required. Re-run PowerShell using Run as Administrator.'
-    exit 1
+if (-not $script:IsDotSourced) {
+    if (-not (Test-Administrator)) {
+        Write-Error 'Administrator privileges are required. Re-run PowerShell using Run as Administrator.'
+        exit 1
+    }
+
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem
+    if ($os.Caption -notmatch 'Windows 11') {
+        Write-Error "This script supports Windows 11 only. Detected: $($os.Caption)"
+        exit 1
+    }
+
+    foreach ($requiredCommand in @('Get-AppxPackage', 'Get-AppxProvisionedPackage', 'Enable-ComputerRestore', 'Checkpoint-Computer')) {
+        if (Get-Command -Name $requiredCommand -ErrorAction SilentlyContinue) { continue }
+        Write-Error "Required command '$requiredCommand' is unavailable in Windows PowerShell 5.1."
+        exit 1
+    }
+
+    Write-Phase 'Checking current configuration'
+    try {
+        $changesRequired = Test-DebloatChangesRequired
+        Write-PhaseComplete 'Checking current configuration'
+    }
+    catch {
+        Add-Result -Area 'Preflight' -Item 'Configuration inventory' -Status Failure -Detail $_.Exception.Message
+        Write-Host 'Failed: Checking current configuration' -ForegroundColor Red
+        $changesRequired = $false
+    }
+
+    if (@($Results | Where-Object { $_.Status -eq 'Failure' }).Count -eq 0) {
+        if ($changesRequired) {
+            $restorePointCreated = New-SafetyRestorePoint
+            if (-not $restorePointCreated -and -not $ContinueWithoutRestorePoint) {
+                Write-Error 'No fresh restore point was created. Debloat changes were not started; System Restore might have been enabled. Use -ContinueWithoutRestorePoint only if you explicitly accept this risk.'
+                exit 1
+            }
+            if (-not $restorePointCreated) {
+                Add-Result -Area 'Safety' -Item 'Restore point policy' -Status Warning -Detail 'Continuing by explicit user request'
+            }
+
+            Remove-BloatwarePackages
+            Disable-Telemetry
+            Disable-ConsumerFeatures
+            Remove-StartupEntries
+        }
+        else {
+            Add-Result -Area 'Safety' -Item 'Restore point' -Status Skipped -Detail 'No configuration changes are required'
+        }
+    }
+
+    Write-Phase 'Completion summary'
+    $Results | Format-Table -AutoSize
+    $failures = @($Results | Where-Object { $_.Status -eq 'Failure' })
+    $warnings = @($Results | Where-Object { $_.Status -eq 'Warning' })
+    $planned = @($Results | Where-Object { $_.Status -eq 'Planned' })
+    $successes = @($Results | Where-Object { $_.Status -eq 'Success' })
+    $completionMessage = Get-CompletionMessage -FailureCount $failures.Count -WarningCount $warnings.Count -PlannedCount $planned.Count -SuccessCount $successes.Count -IsWhatIf $WhatIfPreference
+    Write-Host $completionMessage -ForegroundColor $(if ($failures.Count -gt 0) { 'Red' } elseif ($warnings.Count -gt 0) { 'Yellow' } else { 'Green' })
+
+    if ($failures.Count -gt 0) { exit 1 }
 }
-
-$os = Get-CimInstance -ClassName Win32_OperatingSystem
-if ($os.Caption -notmatch 'Windows 11') {
-    Write-Error "This script supports Windows 11 only. Detected: $($os.Caption)"
-    exit 1
-}
-
-foreach ($requiredCommand in @('Get-AppxPackage', 'Get-AppxProvisionedPackage', 'Enable-ComputerRestore', 'Checkpoint-Computer', 'Get-ComputerRestorePoint')) {
-    if (Get-Command -Name $requiredCommand -ErrorAction SilentlyContinue) { continue }
-    Write-Error "Required command '$requiredCommand' is unavailable in Windows PowerShell 5.1."
-    exit 1
-}
-
-$restorePointCreated = New-SafetyRestorePoint
-if (-not $restorePointCreated -and -not $ContinueWithoutRestorePoint) {
-    Write-Error 'No restore point was created. Debloat changes were not started; System Restore might have been enabled. Use -ContinueWithoutRestorePoint only if you explicitly accept this risk.'
-    exit 1
-}
-if (-not $restorePointCreated) {
-    Add-Result -Area 'Safety' -Item 'Restore point policy' -Status Warning -Detail 'Continuing by explicit user request'
-}
-
-Remove-BloatwarePackages
-Disable-Telemetry
-Disable-ConsumerFeatures
-Remove-StartupEntries
-
-Write-Phase 'Completion summary'
-$Results | Format-Table -AutoSize
-$failures = @($Results | Where-Object { $_.Status -eq 'Failure' })
-$warnings = @($Results | Where-Object { $_.Status -eq 'Warning' })
-Write-Host "Completed with $($failures.Count) failure(s) and $($warnings.Count) warning(s). Restart Windows to apply all changes." -ForegroundColor $(if ($failures.Count -gt 0) { 'Red' } elseif ($warnings.Count -gt 0) { 'Yellow' } else { 'Green' })
-
-if ($failures.Count -gt 0) { exit 1 }

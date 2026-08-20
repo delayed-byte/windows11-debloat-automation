@@ -4,7 +4,7 @@
 *.psm1.user
 
 # Visual Studio Code workspace state
-.vscode/
+.vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
 !.vscode/tasks.json

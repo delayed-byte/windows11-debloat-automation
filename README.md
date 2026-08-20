@@ -4,7 +4,9 @@ A conservative PowerShell script for removing selected Windows 11 packaged apps,
 
 ## Safety
 
-The script requires administrator privileges and creates a restore point named `Pre-Debloat Restore Point` before starting debloat changes. Because Windows limits restore-point creation frequency, a restore point created by this script within the previous 24 hours is reused on sequential runs.
+The script requires administrator privileges and performs a read-only drift check first. If changes are required, it creates a fresh restore point named `Pre-Debloat Restore Point` before starting them. If the system already matches the requested configuration, the script performs no writes and does not require another restore point or restart.
+
+Windows normally limits restore-point creation to one per 24 hours. If configuration drift requires another modifying run during that window, the script stops safely unless you explicitly supply `-ContinueWithoutRestorePoint`.
 
 Review the configurable package, service, and startup arrays before running the script. Calculator, Notepad, Windows Terminal, AppX frameworks, and other core dependencies are not included in the default removal list.
 
@@ -36,7 +38,7 @@ The default invocation does not prompt for every change. Supply `-Confirm` to re
 
 The script prints color-coded phase and item results:
 
-- `Success`: the requested end state was applied or already protected by a recent restore point.
+- `Success`: the requested end state was applied.
 - `Planned`: the operation would run, but `-WhatIf` prevented it.
 - `Skipped`: the item was absent or confirmation was declined.
 - `Warning`: execution continued with an explicitly accepted safety warning.
@@ -50,7 +52,7 @@ The tests support Pester 3.4 and later:
 Invoke-Pester -Path .\tests
 ```
 
-The test suite parses the script and checks the safety-critical relaunch, restore-point reuse, dry-run reporting, and protected package configuration without applying system changes.
+The test suite parses and safely imports the script, then exercises drift detection, dry-run reporting, completion decisions, relaunch guards, and protected package configuration without applying system changes.
 
 ## Repository structure
 

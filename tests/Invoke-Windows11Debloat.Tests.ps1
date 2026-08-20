@@ -1,25 +1,62 @@
-$scriptPath = Join-Path $PSScriptRoot '..\scripts\Invoke-Windows11Debloat.ps1'
-$scriptContent = Get-Content -LiteralPath $scriptPath -Raw
-$tokens = $null
-$parseErrors = $null
-$scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
-    $scriptPath,
-    [ref]$tokens,
-    [ref]$parseErrors
-)
+Describe 'Invoke-Windows11Debloat.ps1' {
+    BeforeAll {
+        $scriptPath = Join-Path $PSScriptRoot '..\scripts\Invoke-Windows11Debloat.ps1'
+        $scriptContent = Get-Content -LiteralPath $scriptPath -Raw
+        $tokens = $null
+        $parseErrors = $null
+        $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        . $scriptPath
 
-function Assert-True {
-    param(
-        [Parameter(Mandatory)][bool]$Condition,
-        [Parameter(Mandatory)][string]$Message
-    )
-    if (-not $Condition) { throw $Message }
-}
+        function Assert-True {
+            param(
+                [Parameter(Mandatory)][bool]$Condition,
+                [Parameter(Mandatory)][string]$Message
+            )
+            if (-not $Condition) { throw $Message }
+        }
+    }
 
-Describe 'Invoke-Windows11Debloat.ps1 static safety checks' {
     It 'has valid PowerShell syntax' {
         Assert-True -Condition ($parseErrors.Count -eq 0) -Message 'The script contains PowerShell parse errors.'
         Assert-True -Condition ($null -ne $scriptAst) -Message 'The script AST was not created.'
+    }
+
+    It 'classifies declined operations by actual execution mode' {
+        Assert-True -Condition ((Get-DeclinedStatus -IsWhatIf $true) -eq 'Planned') -Message 'WhatIf operations must be planned.'
+        Assert-True -Condition ((Get-DeclinedStatus -IsWhatIf $false) -eq 'Skipped') -Message 'Declined operations must be skipped.'
+    }
+
+    It 'does not recommend a restart for a preview' {
+        $message = Get-CompletionMessage -FailureCount 0 -WarningCount 0 -PlannedCount 3 -SuccessCount 0 -IsWhatIf $true
+        Assert-True -Condition ($message -match 'No changes were made') -Message 'Preview output must state that no changes were made.'
+        Assert-True -Condition ($message -match 'do not restart') -Message 'Preview output must not recommend a restart.'
+    }
+
+    It 'does not recommend a restart when the configuration already matches' {
+        $message = Get-CompletionMessage -FailureCount 0 -WarningCount 0 -PlannedCount 0 -SuccessCount 0 -IsWhatIf $false
+        Assert-True -Condition ($message -match 'no restart is required') -Message 'An unchanged run must not recommend a restart.'
+    }
+
+    It 'detects an unchanged configuration without requesting a restore point' {
+        Mock Get-AppxProvisionedPackage { @() }
+        Mock Get-AppxPackage { @() }
+        Mock Test-DwordValueMatches { $true }
+        Mock Get-Service { @() }
+        Mock Test-StartupValueExists { $false }
+
+        Assert-True -Condition (-not (Test-DebloatChangesRequired)) -Message 'An unchanged configuration was reported as drifted.'
+    }
+
+    It 'detects registry drift before a modifying run' {
+        Mock Get-AppxProvisionedPackage { @() }
+        Mock Get-AppxPackage { @() }
+        Mock Test-DwordValueMatches { $false }
+
+        Assert-True -Condition (Test-DebloatChangesRequired) -Message 'Registry drift was not detected.'
     }
 
     It 'forwards Confirm to Windows PowerShell only when it is true' {
@@ -35,22 +72,11 @@ Describe 'Invoke-Windows11Debloat.ps1 static safety checks' {
         Assert-True -Condition ($scriptContent -match "'System32'") -Message 'The 64-bit handoff does not use System32.'
     }
 
-    It 'reuses its recent restore point to support sequential runs' {
-        Assert-True -Condition ($scriptContent -match 'Get-ComputerRestorePoint') -Message 'Existing restore points are not queried.'
-        Assert-True -Condition ($scriptContent -match "Description -eq 'Pre-Debloat Restore Point'") -Message 'The named restore point is not selected.'
-        Assert-True -Condition ($scriptContent -match 'AddHours\(-24\)') -Message 'The 24-hour restore-point window is not checked.'
-    }
-
-    It 'reports declined WhatIf operations as planned' {
-        Assert-True -Condition ($scriptContent -match "ValidateSet\('Success', 'Planned', 'Skipped', 'Warning', 'Failure'\)") -Message 'Planned is not a supported result status.'
-        Assert-True -Condition ($scriptContent -match 'if \(\$WhatIfPreference\) \{ ''Planned'' \} else \{ ''Skipped'' \}') -Message 'WhatIf declines are not reported as planned.'
-    }
-
     It 'includes required Xbox packages while preserving named core apps' {
-        Assert-True -Condition ($scriptContent -match "'Microsoft.XboxGamingOverlay'") -Message 'Xbox Gaming Overlay is missing from the target list.'
-        Assert-True -Condition ($scriptContent -match "'Microsoft.GamingApp'") -Message 'Microsoft Gaming App is missing from the target list.'
-        Assert-True -Condition ($scriptContent -notmatch "(?m)^\s*'Microsoft.WindowsCalculator',?\s*$") -Message 'Calculator must be preserved.'
-        Assert-True -Condition ($scriptContent -notmatch "(?m)^\s*'Microsoft.WindowsNotepad',?\s*$") -Message 'Notepad must be preserved.'
-        Assert-True -Condition ($scriptContent -notmatch "(?m)^\s*'Microsoft.WindowsTerminal',?\s*$") -Message 'Windows Terminal must be preserved.'
+        Assert-True -Condition ($BloatwarePackages -contains 'Microsoft.XboxGamingOverlay') -Message 'Xbox Gaming Overlay is missing from the target list.'
+        Assert-True -Condition ($BloatwarePackages -contains 'Microsoft.GamingApp') -Message 'Microsoft Gaming App is missing from the target list.'
+        Assert-True -Condition ($BloatwarePackages -notcontains 'Microsoft.WindowsCalculator') -Message 'Calculator must be preserved.'
+        Assert-True -Condition ($BloatwarePackages -notcontains 'Microsoft.WindowsNotepad') -Message 'Notepad must be preserved.'
+        Assert-True -Condition ($BloatwarePackages -notcontains 'Microsoft.WindowsTerminal') -Message 'Windows Terminal must be preserved.'
     }
 }

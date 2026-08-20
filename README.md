@@ -49,7 +49,7 @@ The script prints color-coded phase and item results:
 The tests support Pester 3.4 and later:
 
 ```powershell
-Invoke-Pester -Path .\tests
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Pester -Path .\tests"
 ```
 
 The test suite parses and safely imports the script, then exercises restore-point selection boundaries, fallback behavior, drift detection, dry-run reporting, completion decisions, relaunch guards, and protected package configuration without applying system changes.

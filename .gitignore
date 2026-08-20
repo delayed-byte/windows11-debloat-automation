@@ -1,0 +1,30 @@
+# PowerShell editor artifacts
+*.psd1.user
+*.ps1.user
+*.psm1.user
+
+# Visual Studio Code workspace state
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Visual Studio and Windows user-specific files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test, coverage, and transient output
+TestResults/
+coverage/
+*.coverage
+*.log
+*.tmp
+*.bak
+
+# Windows Explorer metadata
+Thumbs.db
+Desktop.ini

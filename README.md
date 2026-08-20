@@ -4,7 +4,7 @@ A conservative PowerShell script for removing selected Windows 11 packaged apps,
 
 ## Safety
 
-The script requires administrator privileges and performs a read-only drift check first. If changes are required, it ensures that a restore point named `Pre-Debloat Restore Point` exists from within the previous 24 hours before starting them. If the system already matches the requested configuration, the script performs no writes and does not require another restore point or restart.
+The script requires administrator privileges and performs a read-only drift check first. If changes are required, it enables System Restore on `C:\` and ensures that a restore point named `Pre-Debloat Restore Point` exists from within the previous 24 hours before starting them. If the system already matches the requested configuration, the script performs no writes and does not require another restore point or restart.
 
 Windows normally suppresses additional restore points during its configured frequency window. To keep sequential retries idempotent without changing that machine policy, the script reuses the newest checkpoint with that exact name from within the previous 24 hours and creates one when none qualifies. A rollback to a reused checkpoint also rolls back unrelated system changes made after it, so review intervening changes before restoring Windows.
 

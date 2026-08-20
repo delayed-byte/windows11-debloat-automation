@@ -109,13 +109,39 @@ Describe 'Invoke-Windows11Debloat.ps1' {
     }
 
     It 'reuses a recent matching restore point' {
+        $script:RestoreEnableCalls = 0
         Mock Get-RecentDebloatRestorePoint { [pscustomobject]@{ Description = 'Pre-Debloat Restore Point' } }
-        Mock Enable-ComputerRestore { throw 'Enable should not be called.' }
+        Mock Enable-ComputerRestore { $script:RestoreEnableCalls++ }
         Mock Checkpoint-Computer { throw 'Checkpoint should not be called.' }
         $script:Results.Clear()
 
         Assert-True -Condition (New-SafetyRestorePoint -Confirm:$false) -Message 'A recent matching restore point should be accepted.'
+        Assert-True -Condition ($script:RestoreEnableCalls -eq 1) -Message 'System Restore must be enabled before reusing a restore point.'
         Assert-True -Condition ($script:Results[0].Detail -match 'Reusing') -Message 'Restore-point reuse was not reported.'
+    }
+
+    It 'fails safely when restore enablement fails before reuse' {
+        $script:CheckpointCalls = 0
+        Mock Get-RecentDebloatRestorePoint { [pscustomobject]@{ Description = 'Pre-Debloat Restore Point' } }
+        Mock Enable-ComputerRestore { throw 'System Restore unavailable' }
+        Mock Checkpoint-Computer { $script:CheckpointCalls++ }
+        $script:Results.Clear()
+
+        Assert-True -Condition (-not (New-SafetyRestorePoint -Confirm:$false)) -Message 'An enablement failure must fail the safety gate.'
+        Assert-True -Condition ($script:CheckpointCalls -eq 0) -Message 'Checkpoint creation must not run after enablement fails.'
+        Assert-True -Condition ($script:Results[0].Status -eq 'Failure') -Message 'An enablement failure was not recorded.'
+    }
+
+    It 'previews enablement and reuse without writing' {
+        $script:SafetyWriteCalls = 0
+        Mock Get-RecentDebloatRestorePoint { [pscustomobject]@{ Description = 'Pre-Debloat Restore Point' } }
+        Mock Enable-ComputerRestore { $script:SafetyWriteCalls++ }
+        Mock Checkpoint-Computer { $script:SafetyWriteCalls++ }
+        $script:Results.Clear()
+
+        Assert-True -Condition (New-SafetyRestorePoint -WhatIf) -Message 'A safe preview should allow the workflow to continue in preview mode.'
+        Assert-True -Condition ($script:SafetyWriteCalls -eq 0) -Message 'Preview mode must not enable System Restore or create a checkpoint.'
+        Assert-True -Condition ($script:Results[0].Status -eq 'Planned') -Message 'Previewed restore enablement and reuse must be reported as planned.'
     }
 
     It 'creates a restore point when no recent matching restore point exists' {

@@ -26,7 +26,7 @@ The project is a Windows 11 administrative PowerShell utility that applies a def
 
 | Area | Implementation intent | Verification outcome |
 | --- | --- | --- |
-| Safety | Validate elevation before changing the machine; before all modifications, reuse the newest qualifying restore point from within the previous 24 hours or create one when none qualifies. | A restore point named `Pre-Debloat Restore Point` from within the previous 24 hours exists before app, registry, service, or startup changes start. |
+| Safety | Validate elevation before changing the machine; enable System Restore on `C:\`; before all debloat modifications, reuse the newest qualifying restore point from within the previous 24 hours or create one when none qualifies. | System Restore enablement is attempted and a restore point named `Pre-Debloat Restore Point` from within the previous 24 hours exists before app, registry, service, or startup changes start. |
 | App removal | Maintain explicit package identifiers; remove installed packages and matching provisioned packages separately. | Targeted packages are absent for applicable users and do not appear in newly created profiles; protected core apps remain. |
 | Privacy | Set the diagnostic-data policy and the named service states; set the required HKCU/HKLM advertisement settings. | Registry values match the selected policy and both services are stopped and disabled. |
 | Startup | Use an explicit startup-entry list, with a conservative default. | Only named values are removed from the HKLM/HKCU `Run` keys. |
@@ -56,7 +56,7 @@ The project is a Windows 11 administrative PowerShell utility that applies a def
 ## Acceptance Criteria
 
 - The script refuses to perform modifications without administrative elevation.
-- Before any modification, it uses the newest `Pre-Debloat Restore Point` from within the previous 24 hours or attempts to enable System Restore on `C:` and create one; failure is clearly reported and follows the selected stop/continue policy.
+- Before any debloat modification, it attempts to enable System Restore on `C:\`, then uses the newest `Pre-Debloat Restore Point` from within the previous 24 hours or creates one; failure is clearly reported and follows the selected stop/continue policy.
 - Its app-removal list is explicit, editable, and excludes Calculator, Notepad, Windows Terminal, AppX frameworks, and other declared protected packages.
 - For every target package, the script attempts installed-package removal and provisioned-package removal independently, without failing when either is absent.
 - `DiagTrack` and `dmwappushservice` are stopped when present and configured with startup type `Disabled`.

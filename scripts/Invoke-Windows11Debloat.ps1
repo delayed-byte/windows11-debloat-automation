@@ -308,20 +308,33 @@ function New-SafetyRestorePoint {
     }
 
     try {
-        if ($null -ne $recentRestorePoint) {
-            Add-Result -Area 'Safety' -Item $RestorePointDescription -Status Success -Detail 'Reusing the newest matching restore point from within the previous 24 hours'
-            Write-PhaseComplete 'System safety and rollback'
-            return $true
+        $safetyAction = if ($null -ne $recentRestorePoint) {
+            "Enable System Restore and reuse $RestorePointDescription"
+        }
+        else {
+            "Enable System Restore and create $RestorePointDescription"
         }
 
-        if (-not $PSCmdlet.ShouldProcess('C:', "Enable System Restore and create $RestorePointDescription")) {
+        if (-not $PSCmdlet.ShouldProcess('C:', $safetyAction)) {
             $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
-            Add-Result -Area 'Safety' -Item $RestorePointDescription -Status $status -Detail 'System Restore would be enabled and a restore point created'
+            $detail = if ($null -ne $recentRestorePoint) {
+                'System Restore would be enabled and the recent restore point reused'
+            }
+            else {
+                'System Restore would be enabled and a restore point created'
+            }
+            Add-Result -Area 'Safety' -Item $RestorePointDescription -Status $status -Detail $detail
             Write-PhaseComplete 'System safety and rollback'
             return $WhatIfPreference
         }
 
         Enable-ComputerRestore -Drive 'C:\' -ErrorAction Stop
+        if ($null -ne $recentRestorePoint) {
+            Add-Result -Area 'Safety' -Item $RestorePointDescription -Status Success -Detail 'System Restore enabled; reusing the newest matching restore point from within the previous 24 hours'
+            Write-PhaseComplete 'System safety and rollback'
+            return $true
+        }
+
         Checkpoint-Computer -Description $RestorePointDescription -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
         Add-Result -Area 'Safety' -Item $RestorePointDescription -Status Success
         Write-PhaseComplete 'System safety and rollback'

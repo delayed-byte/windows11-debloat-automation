@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Must be run from an elevated Windows PowerShell session. By default, the
-    script stops before making changes if it cannot create a restore point.
+    script stops before making changes if it cannot establish a qualifying restore point.
     HKCU changes apply only to the account running this script.
 
 .EXAMPLE
@@ -87,6 +87,8 @@ $BloatwarePackages = @(
 
 $TelemetryServices = @('DiagTrack', 'dmwappushservice')
 $StartupValueNames = @('MicrosoftEdgeAutoLaunch')
+$RestorePointDescription = 'Pre-Debloat Restore Point'
+$RestorePointMaximumAgeHours = 24
 $StartupRegistryPaths = @(
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
     'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -140,7 +142,7 @@ function Get-CompletionMessage {
         [Parameter(Mandatory)][int]$FailureCount,
         [Parameter(Mandatory)][int]$WarningCount,
         [Parameter(Mandatory)][int]$PlannedCount,
-        [Parameter(Mandatory)][int]$SuccessCount,
+        [Parameter(Mandatory)][int]$AppliedCount,
         [Parameter(Mandatory)][bool]$IsWhatIf
     )
 
@@ -149,8 +151,9 @@ function Get-CompletionMessage {
         if ($PlannedCount -eq 0) { return 'Preview complete. The system already matches the requested configuration; no changes or restart are required.' }
         return "Preview complete with $PlannedCount planned operation(s). No changes were made; do not restart for this preview."
     }
-    if ($SuccessCount -eq 0 -and $WarningCount -eq 0 -and $FailureCount -eq 0) {
-        return 'Completed. The system already matches the requested configuration; no restart is required.'
+    if ($AppliedCount -eq 0) {
+        if ($FailureCount -gt 0) { return "Failed with $FailureCount failure(s). No debloat changes were applied; no restart is required." }
+        return 'Completed. No debloat changes were applied; no restart is required.'
     }
     return "Completed with $FailureCount failure(s) and $WarningCount warning(s). Restart Windows to apply all changes."
 }
@@ -178,7 +181,9 @@ function Test-DwordValueMatches {
     if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) { return $false }
     $key = Get-Item -LiteralPath $Path -ErrorAction Stop
     if ($key.GetValueNames() -notcontains $Name) { return $false }
-    return [int]$key.GetValue($Name) -eq $Value
+    $currentValue = $key.GetValue($Name)
+    if ($currentValue -isnot [int]) { return $false }
+    return $currentValue -eq $Value
 }
 
 function Test-StartupValueExists {
@@ -249,27 +254,81 @@ function Set-DwordValue {
     }
 }
 
+function Get-RecentDebloatRestorePoint {
+    [CmdletBinding()]
+    param(
+        [ValidateRange(1, 168)][int]$MaximumAgeHours = $script:RestorePointMaximumAgeHours,
+        [ValidateNotNullOrEmpty()][string]$Description = $script:RestorePointDescription
+    )
+
+    $now = Get-Date
+    $cutoff = $now.AddHours(-$MaximumAgeHours)
+    $matchingRestorePoints = @(Get-ComputerRestorePoint -ErrorAction Stop | Where-Object {
+        $_.Description -eq $Description
+    })
+
+    $candidates = @(
+        foreach ($restorePoint in $matchingRestorePoints) {
+            try {
+                $creationTime = if ($restorePoint.CreationTime -is [datetime]) {
+                    $restorePoint.CreationTime
+                }
+                else {
+                    [Management.ManagementDateTimeConverter]::ToDateTime([string]$restorePoint.CreationTime)
+                }
+                if ($creationTime -ge $cutoff -and $creationTime -le $now) {
+                    [pscustomobject]@{
+                        RestorePoint = $restorePoint
+                        CreationTime = $creationTime
+                    }
+                }
+            }
+            catch {
+                # Ignore malformed historical records and continue checking others.
+            }
+        }
+    )
+
+    $newestCandidate = $candidates | Sort-Object -Property CreationTime -Descending | Select-Object -First 1
+    if ($null -eq $newestCandidate) { return $null }
+    return $newestCandidate.RestorePoint
+}
+
 function New-SafetyRestorePoint {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param()
     Write-Phase 'System safety and rollback'
 
+    $recentRestorePoint = $null
     try {
-        if (-not $PSCmdlet.ShouldProcess('C:', 'Enable System Restore and create Pre-Debloat Restore Point')) {
+        $recentRestorePoint = Get-RecentDebloatRestorePoint
+    }
+    catch {
+        Add-Result -Area 'Safety' -Item 'Restore point inventory' -Status Warning -Detail "Could not inspect existing restore points; attempting a new checkpoint: $($_.Exception.Message)"
+    }
+
+    try {
+        if ($null -ne $recentRestorePoint) {
+            Add-Result -Area 'Safety' -Item $RestorePointDescription -Status Success -Detail 'Reusing the newest matching restore point from within the previous 24 hours'
+            Write-PhaseComplete 'System safety and rollback'
+            return $true
+        }
+
+        if (-not $PSCmdlet.ShouldProcess('C:', "Enable System Restore and create $RestorePointDescription")) {
             $status = Get-DeclinedStatus -IsWhatIf $WhatIfPreference
-            Add-Result -Area 'Safety' -Item 'Pre-Debloat Restore Point' -Status $status -Detail 'System Restore would be enabled and a restore point created'
+            Add-Result -Area 'Safety' -Item $RestorePointDescription -Status $status -Detail 'System Restore would be enabled and a restore point created'
             Write-PhaseComplete 'System safety and rollback'
             return $WhatIfPreference
         }
 
         Enable-ComputerRestore -Drive 'C:\' -ErrorAction Stop
-        Checkpoint-Computer -Description 'Pre-Debloat Restore Point' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
-        Add-Result -Area 'Safety' -Item 'Pre-Debloat Restore Point' -Status Success
+        Checkpoint-Computer -Description $RestorePointDescription -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+        Add-Result -Area 'Safety' -Item $RestorePointDescription -Status Success
         Write-PhaseComplete 'System safety and rollback'
         return $true
     }
     catch {
-        Add-Result -Area 'Safety' -Item 'Pre-Debloat Restore Point' -Status Failure -Detail $_.Exception.Message
+        Add-Result -Area 'Safety' -Item $RestorePointDescription -Status Failure -Detail $_.Exception.Message
         Write-Host 'Failed: System safety and rollback' -ForegroundColor Red
         return $false
     }
@@ -426,23 +485,14 @@ function Remove-StartupEntries {
     Write-PhaseComplete 'Removing selected startup entries'
 }
 
-if (-not $script:IsDotSourced) {
-    if (-not (Test-Administrator)) {
-        Write-Error 'Administrator privileges are required. Re-run PowerShell using Run as Administrator.'
-        exit 1
-    }
+function Invoke-DebloatWorkflow {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([switch]$ContinueWithoutRestorePoint)
 
-    $os = Get-CimInstance -ClassName Win32_OperatingSystem
-    if ($os.Caption -notmatch 'Windows 11') {
-        Write-Error "This script supports Windows 11 only. Detected: $($os.Caption)"
-        exit 1
-    }
-
-    foreach ($requiredCommand in @('Get-AppxPackage', 'Get-AppxProvisionedPackage', 'Enable-ComputerRestore', 'Checkpoint-Computer')) {
-        if (Get-Command -Name $requiredCommand -ErrorAction SilentlyContinue) { continue }
-        Write-Error "Required command '$requiredCommand' is unavailable in Windows PowerShell 5.1."
-        exit 1
-    }
+    $script:Results.Clear()
+    $changesRequired = $false
+    $restorePointAttempted = $false
+    $modificationPhasesAttempted = $false
 
     Write-Phase 'Checking current configuration'
     try {
@@ -457,19 +507,24 @@ if (-not $script:IsDotSourced) {
 
     if (@($Results | Where-Object { $_.Status -eq 'Failure' }).Count -eq 0) {
         if ($changesRequired) {
+            $restorePointAttempted = $true
             $restorePointCreated = New-SafetyRestorePoint
             if (-not $restorePointCreated -and -not $ContinueWithoutRestorePoint) {
-                Write-Error 'No fresh restore point was created. Debloat changes were not started; System Restore might have been enabled. Use -ContinueWithoutRestorePoint only if you explicitly accept this risk.'
-                exit 1
+                if (@($Results | Where-Object { $_.Status -eq 'Failure' }).Count -eq 0) {
+                    Add-Result -Area 'Safety' -Item 'Restore point requirement' -Status Failure -Detail 'No qualifying recent restore point was available and a new restore point could not be created; debloat changes were not started'
+                }
             }
-            if (-not $restorePointCreated) {
+            elseif (-not $restorePointCreated) {
                 Add-Result -Area 'Safety' -Item 'Restore point policy' -Status Warning -Detail 'Continuing by explicit user request'
             }
 
-            Remove-BloatwarePackages
-            Disable-Telemetry
-            Disable-ConsumerFeatures
-            Remove-StartupEntries
+            if ($restorePointCreated -or $ContinueWithoutRestorePoint) {
+                $modificationPhasesAttempted = $true
+                Remove-BloatwarePackages
+                Disable-Telemetry
+                Disable-ConsumerFeatures
+                Remove-StartupEntries
+            }
         }
         else {
             Add-Result -Area 'Safety' -Item 'Restore point' -Status Skipped -Detail 'No configuration changes are required'
@@ -477,13 +532,43 @@ if (-not $script:IsDotSourced) {
     }
 
     Write-Phase 'Completion summary'
-    $Results | Format-Table -AutoSize
+    $Results | Format-Table -AutoSize | Out-Host
     $failures = @($Results | Where-Object { $_.Status -eq 'Failure' })
     $warnings = @($Results | Where-Object { $_.Status -eq 'Warning' })
     $planned = @($Results | Where-Object { $_.Status -eq 'Planned' })
-    $successes = @($Results | Where-Object { $_.Status -eq 'Success' })
-    $completionMessage = Get-CompletionMessage -FailureCount $failures.Count -WarningCount $warnings.Count -PlannedCount $planned.Count -SuccessCount $successes.Count -IsWhatIf $WhatIfPreference
+    $applied = @($Results | Where-Object { $_.Status -eq 'Success' -and $_.Area -ne 'Safety' })
+    $completionMessage = Get-CompletionMessage -FailureCount $failures.Count -WarningCount $warnings.Count -PlannedCount $planned.Count -AppliedCount $applied.Count -IsWhatIf $WhatIfPreference
     Write-Host $completionMessage -ForegroundColor $(if ($failures.Count -gt 0) { 'Red' } elseif ($warnings.Count -gt 0) { 'Yellow' } else { 'Green' })
 
-    if ($failures.Count -gt 0) { exit 1 }
+    return [pscustomobject]@{
+        ExitCode = if ($failures.Count -gt 0) { 1 } else { 0 }
+        ChangesRequired = $changesRequired
+        RestorePointAttempted = $restorePointAttempted
+        ModificationPhasesAttempted = $modificationPhasesAttempted
+        AppliedCount = $applied.Count
+        Message = $completionMessage
+        Results = @($Results)
+    }
+}
+
+if (-not $script:IsDotSourced) {
+    if (-not (Test-Administrator)) {
+        Write-Error 'Administrator privileges are required. Re-run PowerShell using Run as Administrator.'
+        exit 1
+    }
+
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem
+    if ($os.Caption -notmatch 'Windows 11') {
+        Write-Error "This script supports Windows 11 only. Detected: $($os.Caption)"
+        exit 1
+    }
+
+    foreach ($requiredCommand in @('Get-AppxPackage', 'Get-AppxProvisionedPackage', 'Enable-ComputerRestore', 'Checkpoint-Computer', 'Get-ComputerRestorePoint')) {
+        if (Get-Command -Name $requiredCommand -ErrorAction SilentlyContinue) { continue }
+        Write-Error "Required command '$requiredCommand' is unavailable in Windows PowerShell 5.1."
+        exit 1
+    }
+
+    $workflowResult = Invoke-DebloatWorkflow -ContinueWithoutRestorePoint:$ContinueWithoutRestorePoint
+    if ($workflowResult.ExitCode -ne 0) { exit $workflowResult.ExitCode }
 }

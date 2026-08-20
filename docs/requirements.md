@@ -28,7 +28,7 @@ The `win11-debloater` project provides an automated, idempotent PowerShell scrip
 ### FR-1: System Safety & Rollback
 
 * **FR-1.1:** The script MUST attempt to enable System Restore on drive `C:\` if it is disabled.
-* **FR-1.2:** The script MUST create a named System Restore Point (`Pre-Debloat Restore Point`) prior to applying any system modifications.
+* **FR-1.2:** Before applying any system modifications, the script MUST ensure that a System Restore Point named `Pre-Debloat Restore Point` exists from within the previous 24 hours. It MUST create one when no qualifying restore point exists and MAY reuse the newest qualifying restore point to accommodate Windows restore-point frequency limits.
 
 ### FR-2: Bloatware App Removal
 
@@ -66,5 +66,5 @@ The `win11-debloater` project provides an automated, idempotent PowerShell scrip
 | Risk | Impact | Mitigation Strategy |
 | --- | --- | --- |
 | **Removal of required apps** | Medium | Maintain an explicit array of non-essential apps; avoid wildcard deletions on core dependencies (e.g., VCLibs, Frameworks). |
-| **System instability from registry changes** | High | Automatically create a System Restore Point before executing any registry or service modifications. |
+| **System instability from registry changes** | High | Ensure a named System Restore Point from within the previous 24 hours exists before executing modifications. Reusing one means a rollback can also undo unrelated changes made after that point, so disclose this scope to users. |
 | **Execution blocked by policy** | Low | Document required execution parameters (`Set-ExecutionPolicy`) in the project README. |

@@ -4,9 +4,9 @@ A conservative PowerShell script for removing selected Windows 11 packaged apps,
 
 ## Safety
 
-The script requires administrator privileges and performs a read-only drift check first. If changes are required, it creates a fresh restore point named `Pre-Debloat Restore Point` before starting them. If the system already matches the requested configuration, the script performs no writes and does not require another restore point or restart.
+The script requires administrator privileges and performs a read-only drift check first. If changes are required, it ensures that a restore point named `Pre-Debloat Restore Point` exists from within the previous 24 hours before starting them. If the system already matches the requested configuration, the script performs no writes and does not require another restore point or restart.
 
-Windows normally limits restore-point creation to one per 24 hours. If configuration drift requires another modifying run during that window, the script stops safely unless you explicitly supply `-ContinueWithoutRestorePoint`.
+Windows normally suppresses additional restore points during its configured frequency window. To keep sequential retries idempotent without changing that machine policy, the script reuses the newest checkpoint with that exact name from within the previous 24 hours and creates one when none qualifies. A rollback to a reused checkpoint also rolls back unrelated system changes made after it, so review intervening changes before restoring Windows.
 
 Review the configurable package, service, and startup arrays before running the script. Calculator, Notepad, Windows Terminal, AppX frameworks, and other core dependencies are not included in the default removal list.
 
@@ -52,7 +52,7 @@ The tests support Pester 3.4 and later:
 Invoke-Pester -Path .\tests
 ```
 
-The test suite parses and safely imports the script, then exercises drift detection, dry-run reporting, completion decisions, relaunch guards, and protected package configuration without applying system changes.
+The test suite parses and safely imports the script, then exercises restore-point selection boundaries, fallback behavior, drift detection, dry-run reporting, completion decisions, relaunch guards, and protected package configuration without applying system changes.
 
 ## Repository structure
 
